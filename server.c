@@ -18,13 +18,13 @@ static void sigint_handler(int signum);
 
 static void parse_arguments(int argc, char *argv[], char **ip_address, char **port);
 
-static void handle_arguments(const char *binary_name, const char *ip_address, const char *port_str, in_port_t *port);
+static void handle_arguments(const char *binary_name, const char *ip_address, const char *port_str, in_port_t *port, int *addr_family);
 
 static in_port_t parse_in_port_t(const char *binary_name, const char *port_str);
 
 _Noreturn static void usage(const char *program_name, int exit_code, const char *message);
 
-static void convert_address(const char *address, struct sockaddr_storage *addr);
+static void convert_address(const char *address, struct sockaddr_storage *addr, int addr_family);
 
 static int socket_create(int domain, int type, int protocol);
 
@@ -59,12 +59,15 @@ int main(int argc, char *argv[])
     in_port_t               port;
     int                     sockfd;
     struct sockaddr_storage addr;
+    int                     addr_family;    // 4 for IPv4, 6 for IPv6
 
-    address  = NULL;
-    port_str = NULL;
+    address     = NULL;
+    port_str    = NULL;
+    addr_family = AF_UNSPEC;    // Default to unspecified
+
     parse_arguments(argc, argv, &address, &port_str);
-    handle_arguments(argv[0], address, port_str, &port);
-    convert_address(address, &addr);
+    handle_arguments(argv[0], address, port_str, &port, &addr_family);
+    convert_address(address, &addr, addr_family);
     sockfd = socket_create(addr.ss_family, SOCK_STREAM, 0);
     socket_bind(sockfd, &addr, port);
     start_listening(sockfd);
@@ -118,8 +121,9 @@ static void parse_arguments(int argc, char *argv[], char **ip_address, char **po
     *port       = argv[2];
 }
 
-static void handle_arguments(const char *binary_name, const char *ip_address, const char *port_str, in_port_t *port)
+static void handle_arguments(const char *binary_name, const char *ip_address, const char *port_str, in_port_t *port, int *addr_family)
 {
+    struct sockaddr_in6 addr6_test;
     if(ip_address == NULL)
     {
         usage(binary_name, EXIT_FAILURE, "The ip address is required.");
@@ -128,6 +132,13 @@ static void handle_arguments(const char *binary_name, const char *ip_address, co
     if(port_str == NULL)
     {
         usage(binary_name, EXIT_FAILURE, "The port is required.");
+    }
+
+    *port = parse_in_port_t(binary_name, port_str);
+
+    if(inet_pton(AF_INET6, ip_address, &addr6_test.sin6_addr) == 1)
+    {
+        *addr_family = AF_INET6;
     }
 
     *port = parse_in_port_t(binary_name, port_str);
@@ -183,21 +194,31 @@ static void sigint_handler(int signum)
 
 #pragma GCC diagnostic pop
 
-static void convert_address(const char *address, struct sockaddr_storage *addr)
+static void convert_address(const char *address, struct sockaddr_storage *addr, int addr_family)
 {
     memset(addr, 0, sizeof(*addr));
 
-    if(inet_pton(AF_INET, address, &(((struct sockaddr_in *)addr)->sin_addr)) == 1)
+    if(addr_family == AF_INET)
     {
+        if(inet_pton(AF_INET, address, &(((struct sockaddr_in *)addr)->sin_addr)) != 1)
+        {
+            fprintf(stderr, "%s is not an IPv4 address\n", address);
+            exit(EXIT_FAILURE);
+        }
         addr->ss_family = AF_INET;
     }
-    else if(inet_pton(AF_INET6, address, &(((struct sockaddr_in6 *)addr)->sin6_addr)) == 1)
+    else if(addr_family == AF_INET6)
     {
+        if(inet_pton(AF_INET6, address, &(((struct sockaddr_in6 *)addr)->sin6_addr)) != 1)
+        {
+            fprintf(stderr, "%s is not an IPv6 address\n", address);
+            exit(EXIT_FAILURE);
+        }
         addr->ss_family = AF_INET6;
     }
     else
     {
-        fprintf(stderr, "%s is not an IPv4 or an IPv6 address\n", address);
+        fprintf(stderr, "Invalid address family: %d\n", addr_family);
         exit(EXIT_FAILURE);
     }
 }
